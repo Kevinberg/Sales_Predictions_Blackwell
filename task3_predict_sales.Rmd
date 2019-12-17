@@ -1,0 +1,259 @@
+---
+title: "task3_predict_sales"
+author: "Kevin Bergmeijer"
+date: "28/11/2019"
+output: html_document
+---
+
+```{r}
+#Install packages & load data
+
+pacman::p_load(pacman, caret, dplyr, ggplot2, rmarkdown, reshape2, devtools, ggcorplot, outliers, corrplot)
+
+existing_products <- read.csv("existingproductattributes2017.csv")
+new_products <- read.csv("newproductattributes2017.csv")
+
+```
+
+```{r}
+# See amount of NA's 
+
+sum(is.na(existing_products)) # 15 NA's 
+na_row <- existing_products[rowSums(is.na(existing_products)) > 0,] # Na's only in bestseller rank
+
+# Exclude best seller rank
+
+existfinal <- subset(existing_products, select = -BestSellersRank )
+
+# Check duplicate value - There are warranty products that are the same except with the price. These are probably different products but all sales are summed together. Action: combining all and taking the mean of the price to one product.
+
+warranty <- existfinal[34:41,]
+
+m <- mean(warranty[,3])
+m <- round(m, 2)
+warranty[,3] <- m 
+
+existfinal[34,] <- warranty[1,]
+existfinal <- existfinal[-c(35:41),]
+
+
+```
+
+```{r}
+# Exploring the data
+
+    for(i in 1:ncol(existfinal)) 
+    if(is.numeric(existfinal[[i]])=="TRUE"){
+     graph <- ggplot(data=existfinal, aes(x=Volume, y=existfinal[[i]])) +
+        geom_point() +
+        geom_smooth() +
+        labs(y=colnames(existfinal[i]), scales = "free_x")
+       print(graph)
+    }
+
+    for(i in 1:ncol(existfinal)) 
+    if(colnames(existfinal[i])=="ProductType") {
+      graph<- ggplot(data=existfinal, aes(x=existfinal[[i]], fill=ProductType))+
+        geom_bar()+
+      labs(x="ProductType")
+        print(graph)
+    }
+```
+
+
+```{r}
+### Making a forloop to detect all outliers and put them all in data frame 
+# existing<-c()
+# finalOutlier<- c()
+# 
+# 
+# for (i in 1:ncol(existfinal)) {
+#   if (is.numeric(existfinal[,i])==TRUE ){
+#     print(names(existfinal[,i]))
+#   outliers_volume <- boxplot.stats(existfinal[[i]])$out
+#   print(outliers_volume)
+#   existing <- existfinal[-which(existfinal[[i]] %in% outliers_volume),]  
+#   print(existing)
+#   finalOutlier <-rbind(finalOutlier,existing)
+#   }}
+# duplicated(finalOutlier)
+# finalOutlierGood <- finalOutlier[!duplicated(finalOutlier),]
+```
+
+
+```{r}
+
+# Outliers / Distribution 
+existfinal1 <- existfinal
+
+boxplot.stats(existfinal$Volume)$out
+
+outliers_volume <- boxplot.stats(existfinal$Volume)$out
+existfinal <- existfinal[-which(existfinal$Volume %in% outliers_volume),]
+
+# normalization of the data ???? 
+```
+
+```{r}
+# Dummify product type:
+
+dummy_existing1 <- dummyVars(" ~ .", data = existfinal)
+dummy_existing <- data.frame(predict(dummy_existing1, newdata = existfinal))
+correlation_matrix <- cor(dummy_existing)
+corrplot(correlation_matrix, tl.cex = 0.5)
+
+
+# Feature Engineering - but not used in the end.
+
+# dummy_existing$volPC <- dummy_existing$ProductType.PC * dummy_existing$Volume
+# dummy_existing$volLaptop <- dummy_existing$ProductType.Laptop * dummy_existing$Volume
+# dummy_existing$volNetbook <- dummy_existing$ProductType.Netbook * dummy_existing$Volume
+# dummy_existing$volSmartphone <- dummy_existing$ProductType.Smartphone * dummy_existing$Volume
+# 
+# corPCset <- subset(dummy_existing,dummy_existing$ProductType.PC==1)
+# corlapset <- subset(dummy_existing,dummy_existing$ProductType.Laptop==1)
+# cornetset <- subset(dummy_existing,dummy_existing$ProductType.Netbook==1)
+# corsmarset <- subset(dummy_existing,dummy_existing$ProductType.Smartphone==1)
+# cor2 <- rbind(corPCset,corlapset,cornetset,corsmarset)
+# cor2.1 <- cor2[,c(16:21)]
+# cor2.2 <- cor2[,c(30:35)]
+# cor2.3 <- cbind(cor2.1,cor2.2)
+# cor2.3
+# corrplot(cor(cor2.3))
+
+
+
+# Correlation matrix 
+
+cormat <- dummy_existing %>%
+    select_if(is.numeric) %>%
+    cor(.)
+
+cormat1 <- existfinal %>%
+    select_if(is.numeric) %>%
+    cor(.)
+
+
+# correlation matrix
+library(ggcorrplot)
+
+ggcorrplot(cormat1, hc.order = TRUE, type = "upper",
+          outline.color = "grey") + 
+    scale_fill_gradient2(low = "#6D9EC1", high = "#E46726", mid = "white", 
+    midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+    theme_minimal()+ theme(axis.text.x = element_text(angle = 90),
+    plot.background = element_rect(fill = "#BFD5E3"))
+
+
+```
+No correlation between product type and volume 
+
+```{r}
+# Anova test 
+
+set.seed(183)
+anova_results <- aov(Volume ~ ProductType, data = existfinal)
+summary(anova_results)
+
+anova_residuals <- residuals(anova_results)
+shapiro.test(anova_residuals)
+```
+The results with a p value of 0.58 is close to being statistically signiﬁcant. Which means that the different product types might or not might respond different to volume. As we saw in the correlation matrix that there is no correlation. 
+
+When we run the Shapiro test we see that the P value being highly statistically significant. Hence we can say that homoscedasticity cannot be assumed.
+
+```{r}
+# Create order of correlation - Melt upper_cor to list + NA's created by the function
+
+cleancor <- melt(cormat, na.rm = TRUE)
+cleancor[cleancor == 1] <- NA #drop perfect
+cleancor$value[abs(cleancor$value) < 0.3 ] <- NA # drop less than abs(0.5)
+cleancor <- na.omit(melt(cleancor)) # melt 
+cleancor[order(abs(-cleancor$value)),] # sort
+```
+Selecting the features to predict the model for volume:
+
+x4StarReviews	0.773473
+PositiveServiceReview	0.4878304
+x2StarReviews	0.6809731
+no product type shows up in the correlation with volume. 
+
+Although 2 star reviews have a high correlation with volume; it has a positive correlation which means that the more two stars the more volume can be expected. In this case we will exclude two stars because logically 2 stars should give a negative correlation instead of a positive one. We can explain the positive relation due to the fact that if a product is popular and sold a lot; then it will have a lot of high star reviews but also low stars. 
+
+
+
+```{r}
+# running model:
+
+ready_model <- subset(existfinal, select = c("Volume", "x4StarReviews", "PositiveServiceReview"))
+
+# Testing model with Outliers included - 
+# ready_model1 <- subset(existfinal1, select = c("Volume", "x4StarReviews", "PositiveServiceReview"))
+
+final_outcome <- c()
+outcome <- c()
+outcome_all_seeds <- c()
+predictions <- list()
+out_cols_names <- c()
+models <- c("svmLinear", "knn", "rf", "lm")
+
+fitControl <- trainControl(method = "repeatedcv",
+                         number = 10,
+                         repeats = 10)
+
+for (i in 1:5) {
+  set.seed(i)
+  inTrain <- createDataPartition(y = ready_model$Volume, p = .75, list = FALSE)
+  training <- ready_model[inTrain,]
+  testing <- ready_model[-inTrain,]
+
+     for (j in models) {
+      fit <- train(Volume ~ ., data = training, method = j, trControl = fitControl)
+      predictedvolume <- predict(fit, testing)
+      out <- postResample(pred = predictedvolume, obs = testing$Volume)
+      outcome <- cbind(out, outcome)
+      out_cols_names <- c(out_cols_names, paste(i,j, sep = "_"))
+      predictions[[paste(i,j, sep = "_")]] <- predictedvolume
+     }
+    }
+
+colnames(outcome) <- out_cols_names
+
+final_outcome1 <- as.data.frame(melt(outcome))
+grepl("svmLinear", final_outcome1$Var2)
+
+SVM <- subset.data.frame(final_outcome1, grepl("svmLinear", final_outcome1$Var2))
+KNN <- subset.data.frame(final_outcome1, grepl("knn", final_outcome1$Var2))
+RF <- subset.data.frame(final_outcome1, grepl("rf", final_outcome1$Var2))
+LM <- subset.data.frame(final_outcome1, grepl("lm", final_outcome1$Var2))
+
+
+final_outcome_seeds <- cbind(tapply(SVM$value, SVM$Var1, mean), tapply(KNN$value, KNN$Var1, mean), tapply(RF$value, RF$Var1, mean), tapply(LM$value, LM$Var1, mean))
+
+colnames(final_outcome_seeds) <-(models)
+
+final_outcome_seeds
+
+finalplot <- melt(final_outcome_seeds)
+
+colnames(finalplot) <- c("metric","method","value")
+ggplot(finalplot, aes(y = value, x = method)) +
+  geom_bar(stat = "identity") +
+  facet_grid(metric ~. , scale = "free")
+
+
+#Predicting sales volume:
+
+LM1 <- train(Volume ~ ., data = training, method = "knn", trControl = fitControl)
+      predicted_new <- predict(LM1, new_products)
+      new_products$Volume <- round(predicted_new, 0)
+      print(new_products)
+
+predicted_new
+
+write.csv(new_products, file = "new_product_predictions", row.names = TRUE)
+
+```
+
+
